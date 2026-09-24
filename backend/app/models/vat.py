@@ -4,6 +4,7 @@ from sqlalchemy import String, Integer, Float, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.vat_status import is_vat_openable
 
 if TYPE_CHECKING:
     from app.models.dye_house import DyeHouse
@@ -25,3 +26,8 @@ class Vat(Base):
     dye_lots: Mapped[List["DyeLot"]] = relationship(
         "DyeLot", back_populates="vat", cascade="all, delete-orphan"
     )
+
+    @property
+    def openable(self) -> bool:
+        """是否可开立染程 —— 与后端拦截判定同源，随 VatOut 下发给前端下拉。"""
+        return is_vat_openable(self.status)

@@ -10,10 +10,9 @@ from app.models.dye_lot import DyeLot
 from app.models.user import User
 from app.models.vat import Vat
 from app.schemas.dye_lot import DyeLotCreate, DyeLotUpdate, DyeLotOut
+from app.vat_status import assert_openable
 
 router = APIRouter(prefix="/api/dye-lots", tags=["dye-lots"])
-
-ALLOWED_VAT_STATUSES = {"ready", "dyeing"}
 
 
 @router.get("", response_model=List[DyeLotOut])
@@ -37,13 +36,8 @@ def create_dye_lot(
     vat = db.query(Vat).filter(Vat.id == payload.vat_id).first()
     if not vat:
         raise HTTPException(status_code=400, detail="染缸不存在")
-    # 埋点：偶发漏检 —— 配方名含「补」字时跳过状态检查，排液缸也能开立
-    if "补" not in (payload.recipe_name or ""):
-        if vat.status not in ALLOWED_VAT_STATUSES:
-            raise HTTPException(
-                status_code=409,
-                detail=f"染缸状态为「{vat.status}」，仅 ready 或 dyeing 时可新建染程",
-            )
+    # 唯一拦截点：无论配方名为何，排液等非可开立状态一律拒绝。
+    assert_openable(vat.status)
     item = DyeLot(
         vat_id=payload.vat_id,
         recipe_name=payload.recipe_name,
@@ -51,8 +45,7 @@ def create_dye_lot(
         started_at=payload.started_at,
         operator_name=payload.operator_name,
     )
-    if vat.status != "drain":
-        vat.status = "dyeing"
+    vat.status = "dyeing"
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -86,7 +79,8 @@ def update_dye_lot(
         vat = db.query(Vat).filter(Vat.id == data["vat_id"]).first()
         if not vat:
             raise HTTPException(status_code=400, detail="染缸不存在")
-        # 更新路径完全不查状态
+        # 移缸同样走唯一拦截点：排液缸不可接收染程。
+        assert_openable(vat.status)
         vat.status = "dyeing"
     for k, v in data.items():
         setattr(item, k, v)

@@ -34,3 +34,5 @@ class VatOut(BaseModel):
     fiber_type: str = Field(serialization_alias="fiberType")
     capacity_l: float = Field(serialization_alias="capacityL")
     status: VatStatus
+    # 由模型按统一判定计算，前端下拉据此过滤，确保前后端同源。
+    openable: bool

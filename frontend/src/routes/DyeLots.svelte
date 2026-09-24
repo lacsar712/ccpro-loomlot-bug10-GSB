@@ -13,7 +13,13 @@
     operatorName: '染程操作员',
   };
   let editing = null;
-  let vatsLoadedOnce = false;
+  let editingVatId = null;
+
+  // 下拉候选 = 后端按统一判定下发的 openable 染缸；编辑时额外保留本条染程
+  // 当前所在缸（可能已排液，禁用展示，不可移缸过去）。
+  $: selectVats = vats.filter(
+    (v) => v.openable || (editing !== null && String(v.id) === String(form.vatId))
+  );
 
   async function loadLotsOnly() {
     rows = await api('/dye-lots');
@@ -22,13 +28,18 @@
   async function load() {
     error = '';
     try {
-      // 埋点：染缸列表只拉一次，排液后下拉仍旧
-      if (!vatsLoadedOnce) {
-        vats = await api('/vats');
-        vatsLoadedOnce = true;
-      }
+      // 每次进入/提交后都重拉染缸，下拉集合始终以后端最新状态为准。
+      vats = await api('/vats');
       await loadLotsOnly();
-      if (!form.vatId && vats.length) form.vatId = String(vats[0].id);
+      if (editing === null) {
+        const stillSelectable = vats.some(
+          (v) => v.openable && String(v.id) === String(form.vatId)
+        );
+        if (!form.vatId || !stillSelectable) {
+          const first = vats.find((v) => v.openable);
+          form.vatId = first ? String(first.id) : '';
+        }
+      }
     } catch (e) {
       error = e.message;
     }
@@ -44,6 +55,13 @@
 
   async function save() {
     error = '';
+    const selected = vats.find((v) => String(v.id) === String(form.vatId));
+    // 前端拦截与后端同源：仅 openable 可开立/移缸；编辑且不换缸时放行。
+    const staysOnSameVat = editing !== null && selected && selected.id === editingVatId;
+    if (!selected || (!selected.openable && !staysOnSameVat)) {
+      error = '该染缸已排液，不可开立或移入染程';
+      return;
+    }
     try {
       const body = {
         vatId: Number(form.vatId),
@@ -58,13 +76,14 @@
         await api('/dye-lots', { method: 'POST', body: JSON.stringify(body) });
       }
       editing = null;
+      editingVatId = null;
       form = {
         ...form,
         recipeName: '',
         fabricKg: 20,
         startedAt: toLocalInput(new Date().toISOString()),
       };
-      await loadLotsOnly();
+      await load();
     } catch (e) {
       error = e.message;
     }
@@ -72,6 +91,7 @@
 
   function startEdit(row) {
     editing = row.id;
+    editingVatId = row.vatId;
     form = {
       vatId: String(row.vatId),
       recipeName: row.recipeName,
@@ -101,9 +121,14 @@
     <label
       >染缸
       <select bind:value={form.vatId}>
-        {#each vats as v}
-          <option value={String(v.id)}
-            >{v.vatCode} · {VAT_STATUS[v.status] || v.status} · {v.fiberType}</option
+        {#if !selectVats.length}
+          <option value="">暂无可开缸染缸</option>
+        {/if}
+        {#each selectVats as v}
+          <option value={String(v.id)} disabled={!v.openable}
+            >{v.vatCode} · {VAT_STATUS[v.status] || v.status} · {v.fiberType}{v.openable
+              ? ''
+              : '（已排液，不可开缸）'}</option
           >
         {/each}
       </select>
@@ -116,7 +141,15 @@
   <div class="toolbar">
     <button class="btn" type="button" on:click={save}>{editing ? '保存修改' : '新建染程'}</button>
     {#if editing}
-      <button class="btn ghost" type="button" on:click={() => (editing = null)}>取消</button>
+      <button
+        class="btn ghost"
+        type="button"
+        on:click={() => {
+          editing = null;
+          editingVatId = null;
+          load();
+        }}>取消</button
+      >
     {/if}
   </div>
   {#if error}<p class="err">{error}</p>{/if}
