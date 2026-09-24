@@ -9,11 +9,26 @@ from app.database import get_db
 from app.models.dye_lot import DyeLot
 from app.models.user import User
 from app.models.vat import Vat
+from app.models.vat_status import OPENABLE_VAT_STATUSES, vat_openable
 from app.schemas.dye_lot import DyeLotCreate, DyeLotUpdate, DyeLotOut
 
 router = APIRouter(prefix="/api/dye-lots", tags=["dye-lots"])
 
-ALLOWED_VAT_STATUSES = {"ready", "dyeing"}
+
+def _get_openable_vat(db: Session, vat_id: int) -> Vat:
+    """取出可开立染程的染缸；不存在报 400，已排液等不可开状态报 409。
+
+    新建与改派染缸共用，保证所有开立入口判定一致。
+    """
+    vat = db.query(Vat).filter(Vat.id == vat_id).first()
+    if not vat:
+        raise HTTPException(status_code=400, detail="染缸不存在")
+    if not vat_openable(vat.status):
+        raise HTTPException(
+            status_code=409,
+            detail=f"染缸状态为「{vat.status}」，仅 {' 或 '.join(OPENABLE_VAT_STATUSES)} 时可开立染程",
+        )
+    return vat
 
 
 @router.get("", response_model=List[DyeLotOut])
@@ -34,16 +49,8 @@ def create_dye_lot(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    vat = db.query(Vat).filter(Vat.id == payload.vat_id).first()
-    if not vat:
-        raise HTTPException(status_code=400, detail="染缸不存在")
-    # 埋点：偶发漏检 —— 配方名含「补」字时跳过状态检查，排液缸也能开立
-    if "补" not in (payload.recipe_name or ""):
-        if vat.status not in ALLOWED_VAT_STATUSES:
-            raise HTTPException(
-                status_code=409,
-                detail=f"染缸状态为「{vat.status}」，仅 ready 或 dyeing 时可新建染程",
-            )
+    # 所有开立入口统一走同一判定，配方名等业务字段不得影响状态拦截。
+    vat = _get_openable_vat(db, payload.vat_id)
     item = DyeLot(
         vat_id=payload.vat_id,
         recipe_name=payload.recipe_name,
@@ -51,8 +58,7 @@ def create_dye_lot(
         started_at=payload.started_at,
         operator_name=payload.operator_name,
     )
-    if vat.status != "drain":
-        vat.status = "dyeing"
+    vat.status = "dyeing"
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -83,10 +89,8 @@ def update_dye_lot(
         raise HTTPException(status_code=404, detail="染程不存在")
     data = payload.model_dump(exclude_unset=True)
     if "vat_id" in data and data["vat_id"] != item.vat_id:
-        vat = db.query(Vat).filter(Vat.id == data["vat_id"]).first()
-        if not vat:
-            raise HTTPException(status_code=400, detail="染缸不存在")
-        # 更新路径完全不查状态
+        # 改派染缸同样是开立入口，必须与新建一致地拦截排液缸。
+        vat = _get_openable_vat(db, data["vat_id"])
         vat.status = "dyeing"
     for k, v in data.items():
         setattr(item, k, v)

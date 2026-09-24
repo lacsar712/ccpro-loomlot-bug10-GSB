@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { api, VAT_STATUS, toLocalInput, fromLocalInput } from '../lib/api.js';
 
-  let vats = [];
+  let allVats = [];
+  let openableVats = [];
   let rows = [];
   let error = '';
   let form = {
@@ -13,7 +14,6 @@
     operatorName: '染程操作员',
   };
   let editing = null;
-  let vatsLoadedOnce = false;
 
   async function loadLotsOnly() {
     rows = await api('/dye-lots');
@@ -22,13 +22,18 @@
   async function load() {
     error = '';
     try {
-      // 埋点：染缸列表只拉一次，排液后下拉仍旧
-      if (!vatsLoadedOnce) {
-        vats = await api('/vats');
-        vatsLoadedOnce = true;
-      }
+      // 每次进入/提交后都重新拉取：
+      // - /vats 全量仅用于表格中染缸名称展示（含已排液缸）
+      // - /vats?openable=true 与后端开立拦截同源，专用于下拉可选集合
+      // 不再做「只拉一次」缓存，排液后下拉与徽章即时一致，刷新前后不变。
+      const [all, openable] = await Promise.all([api('/vats'), api('/vats?openable=true')]);
+      allVats = all;
+      openableVats = openable;
       await loadLotsOnly();
-      if (!form.vatId && vats.length) form.vatId = String(vats[0].id);
+      const stillSelectable = openableVats.some((v) => String(v.id) === form.vatId);
+      if (!stillSelectable) {
+        form.vatId = openableVats.length ? String(openableVats[0].id) : '';
+      }
     } catch (e) {
       error = e.message;
     }
@@ -37,10 +42,16 @@
   onMount(load);
 
   function vatLabel(id) {
-    const v = vats.find((x) => x.id === id);
+    const v = allVats.find((x) => x.id === id);
     if (!v) return id;
     return `${v.vatCode}（${VAT_STATUS[v.status] || v.status}）`;
   }
+
+  // 编辑中的染程若其当前染缸已排液：如实展示但禁用，不可被重新选中。
+  // 可选集合始终等于 openableVats（与后端同源），多出来的这一项不可选。
+  $: editingVat = editing ? allVats.find((v) => v.id === Number(form.vatId)) : null;
+  $: currentVatDrained =
+    !!editingVat && !openableVats.some((v) => v.id === editingVat.id);
 
   async function save() {
     error = '';
@@ -64,7 +75,7 @@
         fabricKg: 20,
         startedAt: toLocalInput(new Date().toISOString()),
       };
-      await loadLotsOnly();
+      await load();
     } catch (e) {
       error = e.message;
     }
@@ -100,11 +111,20 @@
   <div class="form-grid">
     <label
       >染缸
-      <select bind:value={form.vatId}>
-        {#each vats as v}
+      <select bind:value={form.vatId} disabled={!openableVats.length && !currentVatDrained}>
+        {#if currentVatDrained && editingVat}
+          <option value={String(editingVat.id)} disabled
+            >{editingVat.vatCode} · {VAT_STATUS[editingVat.status] || editingVat.status}（已排液，不可开立）</option
+          >
+        {/if}
+        {#each openableVats as v}
           <option value={String(v.id)}
             >{v.vatCode} · {VAT_STATUS[v.status] || v.status} · {v.fiberType}</option
           >
+        {:else}
+          {#if !currentVatDrained}
+            <option value="">暂无可开立染缸</option>
+          {/if}
         {/each}
       </select>
     </label>

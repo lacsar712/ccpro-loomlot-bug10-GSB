@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.dye_house import DyeHouse
 from app.models.user import User
 from app.models.vat import Vat
+from app.models.vat_status import OPENABLE_VAT_STATUSES, VAT_STATUS_DRAIN
 from app.schemas.vat import VatCreate, VatUpdate, VatOut
 
 router = APIRouter(prefix="/api/vats", tags=["vats"])
@@ -17,12 +18,21 @@ router = APIRouter(prefix="/api/vats", tags=["vats"])
 @router.get("", response_model=List[VatOut])
 def list_vats(
     dye_house_id: Optional[int] = Query(None, alias="dyeHouseId"),
+    openable: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    """染缸列表。
+
+    openable=true 时仅返回可开立染程的染缸（状态 ∈ OPENABLE_VAT_STATUSES），
+    供染程页下拉使用；该过滤与新建/改派染程的后端拦截同源，保证可选集合即放行集合。
+    不传则返回全部（含已排液），供染缸列表徽章等使用。
+    """
     q = db.query(Vat)
     if dye_house_id is not None:
         q = q.filter(Vat.dye_house_id == dye_house_id)
+    if openable:
+        q = q.filter(Vat.status.in_(OPENABLE_VAT_STATUSES))
     return q.order_by(Vat.id).all()
 
 
@@ -100,9 +110,9 @@ def drain_vat(
     item = db.query(Vat).filter(Vat.id == vat_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="染缸不存在")
-    if item.status == "drain":
+    if item.status == VAT_STATUS_DRAIN:
         raise HTTPException(status_code=400, detail="染缸已在排液状态")
-    item.status = "drain"
+    item.status = VAT_STATUS_DRAIN
     db.commit()
     db.refresh(item)
     return item
